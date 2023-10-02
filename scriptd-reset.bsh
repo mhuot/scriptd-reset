@@ -1,0 +1,103 @@
+import org.opennms.netmgt.model.events.EventBuilder;
+import org.opennms.netmgt.events.api.EventConstants;
+import org.opennms.netmgt.events.api.EventForwarder;
+import org.opennms.netmgt.model.OnmsNode;
+import org.opennms.netmgt.events.api.model.IEvent;
+import org.opennms.netmgt.config.SnmpPeerFactory;
+import org.opennms.netmgt.snmp.SnmpValueFactory;
+import org.opennms.netmgt.events.api.model.IParm;
+import org.opennms.netmgt.snmp.SnmpAgentConfig;
+import org.opennms.netmgt.model.OnmsMetaData;
+import org.opennms.netmgt.snmp.SnmpObjId;
+import org.opennms.netmgt.snmp.SnmpValue;
+import org.opennms.netmgt.snmp.SnmpUtils; 
+import org.opennms.core.utils.InetAddressUtils;
+
+void sendResetSuccessEvent(OnmsNode node, String key, String expectedValue, String actualValue) {
+    EventBuilder eventBuilder = new EventBuilder("uei.opennms.org/custom/resetSuccess", "Scriptd");
+    eventBuilder.setNodeid(node.getId());
+    eventBuilder.addParam("metaDataKey", key);
+    eventBuilder.addParam("expectedValue", expectedValue);
+    eventBuilder.addParam("actualValue", actualValue);
+
+    org.opennms.netmgt.xml.event.Event resetSuccessEvent = eventBuilder.getEvent();
+    eventForwarder.sendNow(ResetSuccessEvent);
+}
+
+void sendResetFailedEvent(OnmsNode node, String key, String expectedValue, String actualValue) {
+    EventBuilder eventBuilder = new EventBuilder("uei.opennms.org/custom/resetFailed", "Scriptd");
+    eventBuilder.setNodeid(node.getId());
+    eventBuilder.addParam("metaDataKey", key);
+    eventBuilder.addParam("expectedValue", expectedValue);
+    eventBuilder.addParam("actualValue", actualValue);
+
+    org.opennms.netmgt.xml.event.Event resetFailedEvent = eventBuilder.getEvent();
+    eventForwarder.sendNow(resetFailedEvent);
+}
+
+void processReset(IEvent event, OnmsNode node) {
+    if (node == null) {
+        log.warn("Node related to the event not found.");
+        return;
+    }
+
+    SnmpPeerFactory peerFactory = SnmpPeerFactory.getInstance();
+    SnmpValueFactory valueFactory = SnmpUtils.getValueFactory();
+
+    IParm targetIpParm = event.getParm("targetIp");
+
+    // Check if essential parameters are provided
+    String targetIp;
+    if (isParmProvided(targetIpParm, "targetIp")) {
+        targetIp = event.getHost();  // Exit the script if any essential parameter is missing
+    } else {
+        targetIp = targetIpParm.getValue().getContent();
+    }
+
+    // String targetIp = targetIpParm.getValue().getContent();
+    SnmpAgentConfig agentConfig = peerFactory.getAgentConfig(InetAddressUtils.addr(targetIp));
+    log.debug(agentConfig.toString());
+
+    // Retrieve metadata
+    List metaDataList = node.getMetaData();
+
+    for (OnmsMetaData metaData : metaDataList) {
+        String key = metaData.getKey();
+        String newValue = metaData.getValue();
+
+        if (key.startsWith("oid-")) {
+            String[] parts = key.split("-", 3);
+            if (parts.length != 3) {
+                log.warn("Invalid metadata key format: " + key);
+                continue;
+            }
+
+            String dataType = parts[1];
+            String oid = parts[2];
+
+            SnmpObjId snmpObjId = SnmpObjId.get(oid);
+            SnmpValue currentValue = SnmpUtils.get(agentConfig, snmpObjId);
+
+            // Compare and set if different
+            if (!currentValue.toDisplayString().equals(newValue)) {
+                SnmpValue newSetValue = convertValueToSnmpValue(dataType, newValue);
+                SnmpUtils.set(agentConfig, snmpObjId, newSetValue);
+                sendMismatchEvent(node, key, newValue, currentValue.toDisplayString());
+
+                //Check if the set worked
+                SnmpValue afterValue = SnmpUtils.get(agentConfig, snmpObjId);
+                if (validateSnmpValue(agentConfig, snmpObjId, newValue)) {
+                    log.info("Validation successful! Value " + newValue + " was set correctly for oid " + oid + " on  " + targetIp);
+                    sendResetSuccessEvent(node, key, newValue, currentValue.toDisplayString());
+                } else {
+                    log.error("Validation failed! Value " + newValue + " was not set correctly for oid " + oid + " on " + targetIp + " it is still set as " + afterValue.toDisplayString());
+                    sendResetFailedEvent(node, key, newValue, currentValue.toDisplayString());
+                }
+            } else {
+                log.info("No change made " + newValue + " matches " + currentValue.toDisplayString());
+            }
+        } else {
+            log.warn("no matching metadata");
+        }
+    }
+}
