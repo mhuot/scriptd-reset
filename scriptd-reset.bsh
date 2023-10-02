@@ -91,7 +91,7 @@ void processReset(IEvent event, OnmsNode node) {
                     sendResetSuccessEvent(node, key, newValue, currentValue.toDisplayString());
                 } else {
                     log.error("Validation failed! Value " + newValue + " was not set correctly for oid " + oid + " on " + targetIp + " it is still set as " + afterValue.toDisplayString());
-                    sendResetFailedEvent(node, key, newValue, currentValue.toDisplayString());
+                    sendResetFailedEvent(node, key, newValue, currentValue.toDisplayString()); //This is broken at the moment
                 }
             } else {
                 log.info("No change made " + newValue + " matches " + currentValue.toDisplayString());
